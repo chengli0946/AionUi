@@ -309,4 +309,18 @@ if (win.electronAPI) {
     }
     connect();
   };
+
+  // iOS 后台恢复重连
+  try {
+    if (document.visibilityState === 'hidden') {
+      setTimeout(() => { shouldReconnect = true; reconnectDelay = 500; connect(); }, 300);
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        shouldReconnect = true; reconnectDelay = 500; connect();
+      }
+    });
+  } catch {
+    // 忽略 visibilitychange 监听失败（catch 无参数，避免 oxlint no-unused-vars）
+  }
 }
