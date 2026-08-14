@@ -414,6 +414,7 @@ const WebuiModalContent: React.FC = () => {
       // BackendHttpError, caught below and translated via errorCodeMap.
       await webui.changePassword.invoke({
         newPassword: values.newPassword,
+        currentPassword: values.currentPassword,
       });
       Message.success(t('settings.webui.passwordChanged'));
       setSetPasswordModalVisible(false);
@@ -920,6 +921,15 @@ const WebuiModalContent: React.FC = () => {
         size='small'
       >
         <Form form={form} layout='vertical' className='pt-16px'>
+          <Form.Item
+            label={t('settings.webui.currentPassword')}
+            field='currentPassword'
+            rules={[
+              { required: true, message: t('settings.webui.currentPasswordRequired') },
+            ]}
+          >
+            <Input.Password placeholder={t('settings.webui.currentPasswordPlaceholder')} />
+          </Form.Item>
           <Form.Item
             label={t('settings.webui.newPassword')}
             field='newPassword'
