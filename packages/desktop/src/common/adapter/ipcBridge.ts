@@ -1613,8 +1613,9 @@ export const webui = {
     lanIP?: string;
     initialPassword?: string;
   }>('webui.status-changed'),
-  changePassword: httpPost<void, { newPassword: string }>('/api/webui/change-password', (p) => ({
+  changePassword: httpPost<void, { newPassword: string; currentPassword: string }>('/api/webui/change-password', (p) => ({
     new_password: p.newPassword,
+    current_password: p.currentPassword,
   })),
   changeUsername: httpPost<{ username: string }, { newUsername: string }>('/api/webui/change-username', (p) => ({
     new_username: p.newUsername,
