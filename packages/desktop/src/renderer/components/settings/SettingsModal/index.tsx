@@ -202,13 +202,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ visible, onCancel, defaul
       },
     ];
 
-    if (isDesktop) {
-      builtinItems.push({
-        key: 'webui',
-        label: t('settings.webui'),
-        icon: <Earth theme='outline' size='20' fill={iconColors.secondary} />,
-      });
-    }
+    builtinItems.push({
+      key: 'webui',
+      label: t('settings.webui'),
+      icon: <Earth theme='outline' size='20' fill={iconColors.secondary} />,
+    });
 
     builtinItems.push(
       {
