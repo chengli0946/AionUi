@@ -555,21 +555,8 @@ const WebuiModalContent: React.FC = () => {
   const displayPassword = getDisplayPassword();
   const displayUsername = status?.adminUsername || 'admin';
 
-  // 浏览器端只显示 Channels 配置，不显示 WebUI 服务配置 / In browser mode, only show Channels config, not WebUI service config
-  if (!isDesktop) {
-    return (
-      <div className='flex flex-col h-full w-full'>
-        <AionScrollArea className='flex-1 min-h-0 pb-16px' disableOverflow={isPageMode}>
-          <div className='space-y-16px'>
-            <h2 className='text-20px font-500 text-t-primary m-0'>{t('settings.channels', 'Channels')}</h2>
-            <Suspense fallback={<div className='text-13px text-t-secondary'>{t('common.loading')}</div>}>
-              <ChannelModalContentLazy />
-            </Suspense>
-          </div>
-        </AionScrollArea>
-      </div>
-    );
-  }
+  // 浏览器端也显示 WebUI 设置页，但禁用 IPC 相关功能（启动/停止、允许远程）
+  // In browser mode, show full WebUI panel but disable IPC-only controls
 
   const webuiPanel = (
     <AionScrollArea className='flex-1 min-h-0 pb-16px' disableOverflow={isPageMode}>
@@ -631,7 +618,7 @@ const WebuiModalContent: React.FC = () => {
               ) : null
             }
           >
-            <Switch checked={webuiEnabled} loading={startLoading} onChange={handleToggle} />
+            <Switch checked={webuiEnabled} loading={startLoading} onChange={handleToggle} disabled={!isDesktop} />
           </PreferenceRow>
 
           {/* 访问地址（启用 WebUI 后即显示，不依赖后端 running 状态）/ Access URL (shown whenever WebUI is enabled, not tied to backend running state) */}
@@ -679,7 +666,7 @@ const WebuiModalContent: React.FC = () => {
               </span>
             }
           >
-            <Switch checked={allowRemotePreference} onChange={handleAllowRemoteChange} />
+            <Switch checked={allowRemotePreference} onChange={handleAllowRemoteChange} disabled={!isDesktop} />
           </PreferenceRow>
         </div>
 

@@ -214,6 +214,7 @@ function sendHttpRequest(
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    credentials: 'include', /* 移动端 Cookie 认证修复：确保浏览器携带 aionui session Cookie */
   });
 }
 
@@ -252,6 +253,7 @@ export async function httpRequest<T>(
       response = await sendHttpRequest(method, path, headers, body);
     }
   }
+
 
   if (!response.ok) {
     // Response body can only be consumed once — read as text, then try JSON
