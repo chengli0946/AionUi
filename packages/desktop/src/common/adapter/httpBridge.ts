@@ -154,6 +154,8 @@ export type HttpRequestOptions = {
   silentStatuses?: number[];
   /** Extra request headers merged on top of the default `Content-Type`. */
   headers?: Record<string, string>;
+  /** Request timeout in milliseconds (default: 30000 for iOS Safari fix). */
+  timeout?: number;
 };
 
 const SENSITIVE_LOG_KEY_PATTERN = /api[_-]?key|authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|secret/i;
@@ -207,7 +209,8 @@ function sendHttpRequest(
   method: string,
   path: string,
   headers: Record<string, string>,
-  body?: unknown
+  body?: unknown,
+  signal?: AbortSignal
 ): Promise<Response> {
   const url = `${getBaseUrl()}${path}`;
   return fetch(url, {
@@ -215,7 +218,34 @@ function sendHttpRequest(
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: 'include', /* 移动端 Cookie 认证修复：确保浏览器携带 aionui session Cookie */
+    signal,
   });
+}
+
+/**
+ * sendHttpRequest with an AbortController timeout — iOS Safari fix
+ * (prevent indefinite hanging on unstable networks). Each call gets a fresh
+ * controller so a timed-out request never poisons the 401-refresh replay.
+ */
+async function sendHttpRequestWithTimeout(
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body: unknown,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await sendHttpRequest(method, path, headers, body, controller.signal);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`[httpBridge] ${method} ${path} → Request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export async function httpRequest<T>(
@@ -239,7 +269,10 @@ export async function httpRequest<T>(
     body !== undefined ? JSON.stringify(redactForLog(body)).slice(0, 500) : '(no body)'
   );
 
-  let response = await sendHttpRequest(method, path, headers, body);
+  // iOS Safari fix: timeout every request to prevent indefinite hanging on
+  // unstable networks (default 30s, overridable via options.timeout).
+  const timeoutMs = options?.timeout ?? 30000;
+  let response = await sendHttpRequestWithTimeout(method, path, headers, body, timeoutMs);
 
   // Expired access cookie → 401. Attempt one silent session refresh, then replay
   // the original request — the WebUI half of the #4124 fix. refreshSession() is a
@@ -250,7 +283,7 @@ export async function httpRequest<T>(
     const refreshed = await refreshSession();
     if (refreshed) {
       console.debug(`[httpBridge] session refreshed, replaying ${method} ${path}`);
-      response = await sendHttpRequest(method, path, headers, body);
+      response = await sendHttpRequestWithTimeout(method, path, headers, body, timeoutMs);
     }
   }
 
