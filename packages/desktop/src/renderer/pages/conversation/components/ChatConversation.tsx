@@ -154,16 +154,22 @@ const AionrsConversationPanel: React.FC<{ conversation: AionrsConversation; slid
   const onSelectModel = useCallback(
     async (_provider: IProvider, modelName: string) => {
       const selected = { ..._provider, use_model: modelName } as TProviderWithModel;
-      // Kill running agent on model switch — will be rebuilt with new model on next message
-      if (runtimeView.activeTurnId) {
-        const result = await ipcBridge.conversation.stop.invoke({
-          conversation_id: conversation.id,
-          turn_id: runtimeView.activeTurnId,
-        });
-        runtimeView.markStopAcknowledged(runtimeView.activeTurnId, result.runtime);
+      try {
+        // Kill running agent on model switch — will be rebuilt with new model on next message
+        if (runtimeView.activeTurnId) {
+          const result = await ipcBridge.conversation.stop.invoke({
+            conversation_id: conversation.id,
+            turn_id: runtimeView.activeTurnId,
+          });
+          runtimeView.markStopAcknowledged(runtimeView.activeTurnId, result.runtime);
+        }
+        const ok = await ipcBridge.conversation.update.invoke({ id: conversation.id, updates: { model: selected } });
+        return Boolean(ok);
+      } catch (error) {
+        console.error('[ModelSwitch] Failed to update model:', error);
+        // Return false to prevent UI from updating when API fails
+        return false;
       }
-      const ok = await ipcBridge.conversation.update.invoke({ id: conversation.id, updates: { model: selected } });
-      return Boolean(ok);
     },
     [conversation.id, runtimeView]
   );
