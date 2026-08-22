@@ -38,6 +38,7 @@ import { resolveConversationBackend } from '../utils/conversationAssistantIdenti
 import LegacyReadOnlyConversation from '../platforms/legacy/LegacyReadOnlyConversation';
 import SingleChatEmptyState from './SingleChatEmptyState';
 import { useActiveLease } from '../hooks/useActiveLease';
+import { ensureConversationRuntime } from '../utils/ensureConversationRuntime';
 // import SkillRuleGenerator from './components/SkillRuleGenerator'; // Temporarily hidden
 
 const configErrorMessageKey = (error: unknown) => {
@@ -164,6 +165,13 @@ const AionrsConversationPanel: React.FC<{ conversation: AionrsConversation; slid
           runtimeView.markStopAcknowledged(runtimeView.activeTurnId, result.runtime);
         }
         const ok = await ipcBridge.conversation.update.invoke({ id: conversation.id, updates: { model: selected } });
+        
+        if (ok) {
+          // 关键修复：模型切换后重置运行时状态
+          // 强制重新初始化运行时，确保 canSendMessage 正确更新
+          await ensureConversationRuntime(conversation.id);
+        }
+        
         return Boolean(ok);
       } catch (error) {
         console.error('[ModelSwitch] Failed to update model:', error);
