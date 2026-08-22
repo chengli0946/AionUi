@@ -79,6 +79,22 @@ export const useConversationRuntimeView = (conversation_id: string): UseConversa
   const getSnapshot = useCallback(() => getConversationRuntimeViewSnapshot(conversation_id), [conversation_id]);
   const view = useSyncExternalStore(subscribeConversationRuntimeView, getSnapshot, getSnapshot);
 
+  // iOS Safari / Mobile fix: 当 conversation_id 改变时，强制触发 WebSocket 重连
+  // 确保新会话的状态正确初始化，避免输入框无响应
+  useEffect(() => {
+    if (!conversation_id) {
+      return;
+    }
+    
+    // 强制触发 WebSocket 重连，确保新会话的状态正确绑定
+    // 这解决了点击历史会话后输入无反应的问题
+    import('@/common/adapter/httpBridge').then(({ ensureWs }) => {
+      if (typeof ensureWs === 'function') {
+        ensureWs();
+      }
+    }).catch(() => {});
+  }, [conversation_id]);
+
   useEffect(() => {
     if (!conversation_id) {
       return;
