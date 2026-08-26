@@ -9,10 +9,27 @@
     <meta name="apple-mobile-web-app-title" content="AionUi" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="theme-color" content="#4E5969" />
+    <!-- iOS Safari: Force disable caching completely -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <link rel="icon" type="image/png" href="./pwa/icon-192.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./pwa/icon-180.png" />
     <title>AionUi</title>
+    <script>
+      // iOS Safari compatibility: Force cache busting by adding version query
+      (function () {
+        var version = Date.now();
+        var scripts = document.getElementsByTagName('script');
+        for (var i = 0; i < scripts.length; i++) {
+          var src = scripts[i].src;
+          if (src && src.indexOf('?v=') === -1) {
+            scripts[i].src = src + '?v=' + version;
+          }
+        }
+      })();
+    </script>
     <script>
       // Synchronously restore theme appearance from localStorage to prevent theme flash
       (function () {
@@ -36,6 +53,165 @@
   </head>
   <body>
     <script>
+      // iOS Safari compatibility: Force disable Service Worker
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function (registrations) {
+          for (var registration of registrations) {
+            registration.unregister();
+          }
+        }).catch(function (err) {
+          console.warn('[SW] Unregister failed:', err);
+        });
+      }
+
+      // iOS Safari compatibility: clear local auth state on demand.
+      // NOTE: this is ONLY called by the explicit "force logout" button below.
+      // It must NOT be hooked to navigation events — auth is cookie-based, and
+      // wiping cookies/storage on every visit to #/login races the login flow
+      // (the server has just set the session cookie) and re-introduces the
+      // "logout → re-login stuck" loop.
+      window.forceClearAuthStorage = function () {
+        try {
+          var lsKeys = [];
+          try {
+            for (var i = 0; i < localStorage.length; i++) {
+              lsKeys.push(localStorage.key(i));
+            }
+          } catch (e) {}
+          lsKeys.forEach(function (key) {
+            try { localStorage.removeItem(key); } catch (e) {}
+          });
+          localStorage.clear();
+        } catch (e) { console.warn('[Storage] Failed to clear localStorage:', e); }
+
+        try {
+          var ssKeys = [];
+          try {
+            for (var j = 0; j < sessionStorage.length; j++) {
+              ssKeys.push(sessionStorage.key(j));
+            }
+          } catch (e) {}
+          ssKeys.forEach(function (key) {
+            try { sessionStorage.removeItem(key); } catch (e) {}
+          });
+          sessionStorage.clear();
+        } catch (e) { console.warn('[Storage] Failed to clear sessionStorage:', e); }
+
+        // Clear JS-visible cookies (the HttpOnly session cookie is cleared
+        // server-side by POST /logout, so this is best-effort only).
+        try {
+          var cookies = document.cookie.split(';');
+          for (var k = 0; k < cookies.length; k++) {
+            var cookie = cookies[k];
+            var eqPos = cookie.indexOf('=');
+            var name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim();
+            if (!name) continue;
+            document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+          }
+        } catch (e) { console.warn('[Storage] Failed to clear cookies:', e); }
+
+        console.log('[Storage] Force clear completed');
+      };
+
+      // iOS Safari: cap concurrent WebSocket connections. Safari keeps only ~6
+      // HTTP/1.1 connections per host; a handful of lingering WS (reconnect
+      // storms, background/foreground churn, reloads) exhausts the pool and
+      // fetch('/login') then queues client-side forever — the login button
+      // spins and the request never reaches the server. Bound WS usage and
+      // drop sockets while on the login page.
+      (function () {
+        try {
+          var NativeWS = window.WebSocket;
+          var liveSockets = new Set();
+          var MAX_WS = 2;
+          function isLoginPage() {
+            return window.location.pathname === '/login' || window.location.hash.indexOf('/login') !== -1;
+          }
+          function closeSocket(sock) {
+            try { sock.close(1000, 'ws-guard'); } catch (e) {}
+          }
+          function cleanup() {
+            if (isLoginPage()) {
+              liveSockets.forEach(closeSocket);
+              liveSockets.clear();
+            }
+          }
+          window.WebSocket = function (url, protocols) {
+            var sock = protocols === undefined ? new NativeWS(url) : new NativeWS(url, protocols);
+            liveSockets.add(sock);
+            try {
+              if (liveSockets.size > MAX_WS || isLoginPage()) {
+                closeSocket(sock);
+              }
+            } catch (e) {}
+            sock.addEventListener('close', function () { liveSockets.delete(sock); });
+            sock.addEventListener('open', function () {
+              if (isLoginPage()) closeSocket(sock);
+            });
+            return sock;
+          };
+          window.WebSocket.prototype = NativeWS.prototype;
+          window.WebSocket.CONNECTING = NativeWS.CONNECTING;
+          window.WebSocket.OPEN = NativeWS.OPEN;
+          window.WebSocket.CLOSING = NativeWS.CLOSING;
+          window.WebSocket.CLOSED = NativeWS.CLOSED;
+          window.addEventListener('hashchange', cleanup);
+
+          // react-router's hash history changes the hash via history.pushState/
+          // replaceState, which does NOT fire hashchange. Hook those narrowly
+          // (close sockets only — never touch storage) so sockets opened at
+          // boot get dropped the moment the login page becomes active.
+          try {
+            var origPushState = history.pushState;
+            var origReplaceState = history.replaceState;
+            history.pushState = function () {
+              var result = origPushState.apply(this, arguments);
+              cleanup();
+              return result;
+            };
+            history.replaceState = function () {
+              var result = origReplaceState.apply(this, arguments);
+              cleanup();
+              return result;
+            };
+          } catch (e) {
+            console.warn('[WS-Guard] history hook failed:', e);
+          }
+        } catch (e) {
+          console.warn('[WS-Guard] init failed:', e);
+        }
+      })();
+
+      // iOS Safari workaround: Add a visible force-logout button for mobile.
+      window.addEventListener('load', function () {
+        var isMobile = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+        if (isMobile) {
+          var btn = document.createElement('button');
+          btn.id = 'force-logout-btn';
+          btn.textContent = '🔓 强制退出登录';
+          btn.style.cssText = 'position:fixed;top:10px;right:10px;z-index:999999;background:#ff4d4f;color:white;border:none;padding:10px 15px;border-radius:8px;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.2);cursor:pointer;';
+          btn.onclick = function () {
+            if (confirm('确定要强制退出登录吗？这将清除所有本地数据并重新加载。')) {
+              window.forceClearAuthStorage();
+              fetch('/logout', { method: 'POST', credentials: 'include' })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                  console.log('[Logout] API response:', d);
+                })
+                .catch(function (e) {
+                  console.error('[Logout] Error:', e);
+                })
+                .finally(function () {
+                  var logoutUrl = '/#/login?force_logout=' + Date.now();
+                  window.location.replace(logoutUrl);
+                });
+            }
+          };
+          document.body.appendChild(btn);
+          console.log('[Mobile] Force logout button added');
+        }
+      });
+
       // Set arco-theme on body synchronously
       try {
         var t = localStorage.getItem('__aionui_theme');

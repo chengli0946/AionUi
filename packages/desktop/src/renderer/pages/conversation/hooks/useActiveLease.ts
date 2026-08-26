@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 import { ipcBridge } from '@/common';
 
-export const ACTIVE_LEASE_RENEW_INTERVAL_MS = 30_000;
+// 移动端优化：缩短心跳间隔防止 NAT 超时 (原 30 秒 -> 15 秒)
+export const ACTIVE_LEASE_RENEW_INTERVAL_MS = 15_000;
 
 export type ActiveLeaseTarget = { type: 'conversation'; id?: string | null } | { type: 'team'; id?: string | null };
 

@@ -143,46 +143,51 @@ const LoginPage: React.FC = () => {
       setLoading(true);
       setMessage(null);
 
-      const result = await login({ username: trimmedUsername, password, remember: rememberMe });
+      try {
+        const result = await login({ username: trimmedUsername, password, remember: rememberMe });
 
-      if (result.success) {
-        if (rememberMe) {
-          localStorage.setItem(REMEMBER_ME_KEY, 'true');
-          localStorage.setItem(REMEMBERED_USERNAME_KEY, obfuscate(trimmedUsername));
-          localStorage.setItem(REMEMBERED_PASSWORD_KEY, obfuscate(password));
-        } else {
-          localStorage.removeItem(REMEMBER_ME_KEY);
-          localStorage.removeItem(REMEMBERED_USERNAME_KEY);
-          localStorage.removeItem(REMEMBERED_PASSWORD_KEY);
-        }
-
-        const successText = t('login.success');
-        showMessage({ type: 'success', text: successText });
-
-        window.setTimeout(() => {
-          void navigate('/guid', { replace: true });
-        }, 600);
-      } else {
-        const errorText = (() => {
-          switch (result.code) {
-            case 'invalidCredentials':
-              return t('login.errors.invalidCredentials');
-            case 'tooManyAttempts':
-              return t('login.errors.tooManyAttempts');
-            case 'networkError':
-              return t('login.errors.networkError');
-            case 'serverError':
-              return t('login.errors.serverError');
-            case 'unknown':
-            default:
-              return result.message ?? t('login.errors.unknown');
+        if (result.success) {
+          if (rememberMe) {
+            localStorage.setItem(REMEMBER_ME_KEY, 'true');
+            localStorage.setItem(REMEMBERED_USERNAME_KEY, obfuscate(trimmedUsername));
+            localStorage.setItem(REMEMBERED_PASSWORD_KEY, obfuscate(password));
+          } else {
+            localStorage.removeItem(REMEMBER_ME_KEY);
+            localStorage.removeItem(REMEMBERED_USERNAME_KEY);
+            localStorage.removeItem(REMEMBERED_PASSWORD_KEY);
           }
-        })();
 
-        showMessage({ type: 'error', text: errorText });
+          const successText = t('login.success');
+          showMessage({ type: 'success', text: successText });
+
+          window.setTimeout(() => {
+            void navigate('/guid', { replace: true });
+          }, 600);
+        } else {
+          const errorText = (() => {
+            switch (result.code) {
+              case 'invalidCredentials':
+                return t('login.errors.invalidCredentials');
+              case 'tooManyAttempts':
+                return t('login.errors.tooManyAttempts');
+              case 'networkError':
+                return t('login.errors.networkError');
+              case 'serverError':
+                return t('login.errors.serverError');
+              case 'unknown':
+              default:
+                return result.message ?? t('login.errors.unknown');
+            }
+          })();
+
+          showMessage({ type: 'error', text: errorText });
+        }
+      } finally {
+        // iOS Safari fix: always re-enable the submit button. If login() were
+        // to throw, the old code skipped setLoading(false) and the button
+        // stayed disabled forever — the "login does nothing" symptom.
+        setLoading(false);
       }
-
-      setLoading(false);
     },
     [login, navigate, password, rememberMe, showMessage, t, username]
   );

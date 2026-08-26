@@ -449,7 +449,21 @@ function dispatchWsEvent(eventName: string, payload: unknown): void {
   }
 }
 
+// iOS Safari fix: never hold a WebSocket while the login page is active.
+// Safari's per-host HTTP/1.1 connection pool is small (~6); lingering WS
+// connections (reconnect storms, background/foreground churn) exhaust it and
+// fetch('/login') then queues client-side forever — the login button spins
+// and the request never reaches the server. Subscriptions registered while
+// on the login page stay in wsListeners and connect on the first post-login
+// ensureWs() call (conversation runtime view / wsSend / wsEmitter.on).
+function isLoginPage(): boolean {
+  return window.location.pathname === '/login' || window.location.hash.includes('/login');
+}
+
 function ensureWs(): void {
+  if (isLoginPage()) {
+    return;
+  }
   if (typeof window === 'undefined') {
     console.debug('[ensureWs] skipped: no window');
     return;
@@ -521,6 +535,7 @@ function ensureWs(): void {
 }
 
 function scheduleWsReconnect(): void {
+  if (isLoginPage()) return;
   if (wsReconnectTimer) return;
   const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempt), 30000);
   wsReconnectAttempt++;

@@ -113,7 +113,7 @@ if (win.electronAPI) {
 
   // 2.简单的指数退避重连，等待服务端在登录成功后接受新连接
   const scheduleReconnect = () => {
-    if (reconnectTimer !== null || !shouldReconnect) {
+    if (reconnectTimer !== null || !shouldReconnect || isOnLoginPage()) {
       return;
     }
 
@@ -140,8 +140,22 @@ if (win.electronAPI) {
     }, 1000);
   };
 
+  // iOS Safari fix: while on the login page the session is not yet established,
+  // so a WebSocket is useless AND harmful — every open WS occupies one slot of
+  // Safari's per-host HTTP/1.1 connection pool (~6). With a few lingering
+  // sockets (reconnect storms, visibilitychange, multiple reloads) the pool
+  // fills up and fetch('/login') gets queued client-side forever, leaving the
+  // login button spinning. Skip connecting while the login page is active.
+  const isOnLoginPage = (): boolean =>
+    window.location.pathname === '/login' || window.location.hash.includes('/login');
+
+
   // 3.建立 WebSocket 连接（或复用已有的 OPEN/CONNECTING 状态）
   const connect = () => {
+    if (isOnLoginPage()) {
+      return;
+    }
+
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -316,7 +330,7 @@ if (win.electronAPI) {
       setTimeout(() => { shouldReconnect = true; reconnectDelay = 500; connect(); }, 300);
     }
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === 'visible' && !isOnLoginPage()) {
         shouldReconnect = true; reconnectDelay = 500; connect();
       }
     });

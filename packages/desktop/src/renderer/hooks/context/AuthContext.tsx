@@ -85,11 +85,20 @@ function clearAuthCache(): void {
 }
 
 async function fetchCurrentUser(signal?: AbortSignal): Promise<AuthUser | null> {
+  // iOS Safari fix: bound the auth check so the UI can never sit on the
+  // infinite "checking"/AppLoader state when the request hangs (e.g. the
+  // per-host connection pool is saturated). After 8s we abort and fall back
+  // to the login form instead of a spinner forever.
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+  const onOuterAbort = () => controller.abort();
+  signal?.addEventListener('abort', onOuterAbort);
+
   try {
     let response = await fetch(AUTH_USER_ENDPOINT, {
       method: 'GET',
       credentials: 'include',
-      signal,
+      signal: controller.signal,
     });
 
     // The access cookie may have expired — attempt one silent session refresh
@@ -123,6 +132,9 @@ async function fetchCurrentUser(signal?: AbortSignal): Promise<AuthUser | null> 
       return null;
     }
     console.error('Failed to fetch current user:', error);
+  } finally {
+    window.clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', onOuterAbort);
   }
 
   return null;
@@ -183,14 +195,42 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
       // P1 安全修复：登录请求需要 CSRF Token / P1 Security fix: Login needs CSRF token
       // Backend route is /login; web-host's static-server explicitly proxies it.
-      const response = await fetch('/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(withCsrfToken({ username, password, remember })),
-      });
+      // iOS Safari fix: the request may reach the server while the response is
+      // lost on the return path (lossy VPN/campus network), leaving fetch()
+      // hanging. Retry a few times with a short timeout so a blip doesn't
+      // dead-end the user; each attempt that reaches the server shows up in
+      // the backend log, and the first response that gets through wins.
+      const MAX_LOGIN_ATTEMPTS = 3;
+      const LOGIN_ATTEMPT_TIMEOUT_MS = 8000;
+      let response: Response | undefined;
+      let lastLoginError: unknown = null;
+      for (let attempt = 0; attempt < MAX_LOGIN_ATTEMPTS; attempt++) {
+        const loginController = new AbortController();
+        const loginTimeoutId = window.setTimeout(() => loginController.abort(), LOGIN_ATTEMPT_TIMEOUT_MS);
+        try {
+          response = await fetch('/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            signal: loginController.signal,
+            body: JSON.stringify(withCsrfToken({ username, password, remember })),
+          });
+          break;
+        } catch (error) {
+          lastLoginError = error;
+          window.clearTimeout(loginTimeoutId);
+          if (attempt === MAX_LOGIN_ATTEMPTS - 1) {
+            throw error;
+          }
+          // Brief pause before retrying so a recovering network can settle.
+          await new Promise((resolve) => window.setTimeout(resolve, 600));
+        }
+      }
+      if (!response) {
+        throw lastLoginError ?? new Error('Login request failed');
+      }
 
       const data = (await response.json()) as {
         success: boolean;
@@ -276,24 +316,35 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       return;
     }
 
-    try {
-      await fetch('/logout', {
-        method: 'POST',
-        // Logout also needs CSRF token / 登出同样需要 CSRF Token
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(withCsrfToken({})),
+    // iOS Safari fix: optimistic logout. The network path from iOS to the
+    // server is lossy in both directions — the POST /logout may reach the
+    // server (200) while the response never makes it back to the client, so
+    // `await fetch(...)` hangs until its timeout and the UI only transitions
+    // seconds later. Clear local auth state IMMEDIATELY (flip status, purge
+    // cache) and fire the server-side invalidation in the background without
+    // blocking the UI on it.
+    setUser(null);
+    setStatus('unauthenticated');
+    clearAuthCache();
+
+    const logoutController = new AbortController();
+    const logoutTimeoutId = window.setTimeout(() => logoutController.abort(), 4000);
+    fetch('/logout', {
+      method: 'POST',
+      // Logout also needs CSRF token / 登出同样需要 CSRF Token
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      signal: logoutController.signal,
+      body: JSON.stringify(withCsrfToken({})),
+    })
+      .catch((error) => {
+        console.error('Logout request failed:', error);
+      })
+      .finally(() => {
+        window.clearTimeout(logoutTimeoutId);
       });
-    } catch (error) {
-      console.error('Logout request failed:', error);
-    } finally {
-      setUser(null);
-      setStatus('unauthenticated');
-      // Clear cache on logout for security
-      clearAuthCache();
-    }
   }, []);
 
   const value = useMemo<AuthContextValue>(
