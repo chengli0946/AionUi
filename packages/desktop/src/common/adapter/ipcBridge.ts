@@ -110,6 +110,7 @@ import {
   httpGet,
   httpPatch,
   httpPost,
+  httpPostRetry,
   httpPut,
   httpRequest,
   stubProvider,
@@ -366,7 +367,16 @@ export const conversation = {
     () => undefined
   ),
   activeCount: httpGet<{ count: number }>('/api/conversations/active-count'),
-  sendMessage: httpPost<ISendMessageResult, ISendMessageParams>(
+  // httpPostRetry: the message-send fetch must survive transient client-side
+  // network failures (Safari connection pool saturation by WS reconnect storms
+  // on mobile links makes the fetch queue client-side). Only client-side
+  // failures are retried — HTTP responses (409 busy etc.) are thrown
+  // immediately. 12s per-attempt timeout: MUST stay above the typical pool
+  // queue window (measured 1-8s on 5G) — an 8s timeout aborts right at the
+  // queue→send boundary, racing the 202 response (server processed the POST,
+  // frontend shows timeout, message actually sent). 12s + 1.5s backoff:
+  // (12+1.5+12+3+12 = 40.5s worst case, ~13.5s typical for a single retry).
+  sendMessage: httpPostRetry<ISendMessageResult, ISendMessageParams>(
     (p) => `/api/conversations/${p.conversation_id}/messages`,
     (p) => ({
       content: p.input,
@@ -377,7 +387,8 @@ export const conversation = {
       sessions: p.sessions,
       loading_id: p.loading_id,
       inject_skills: p.inject_skills,
-    })
+    }),
+    { timeout: 12000, retryDelayMs: 1500 }
   ),
   getSlashCommands: httpGet<AcpSlashCommandApiItem[], { conversation_id: string }>(
     (p) => `/api/conversations/${p.conversation_id}/slash-commands`

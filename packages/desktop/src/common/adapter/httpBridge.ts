@@ -369,6 +369,65 @@ export function httpPost<Data, Params = undefined>(
   };
 }
 
+/**
+ * Client-side network failure patterns that are safe to retry. HTTP responses
+ * (4xx/5xx, incl. 409 busy) are NOT in this set — the server already saw the
+ * request, so retrying could duplicate the side effect (e.g. a message POST).
+ */
+const RETRYABLE_NETWORK_ERROR_PATTERN = /timeout after|load failed|failed to fetch|networkerror|network error|abort/i;
+
+/**
+ * POST with client-side retry for flaky mobile links (iOS Safari + VPN).
+ *
+ * The message-send endpoint is the prime target: on unstable networks the
+ * Safari per-host HTTP/1.1 connection pool gets saturated by WebSocket
+ * reconnect storms, the fetch() queues client-side, and the 30s httpRequest
+ * timeout fires before the request ever leaves the browser — the message is
+ * lost and the user sees a send failure. Retrying with a short backoff lets
+ * the send land once the pool frees up.
+ *
+ * Only client-side network failures are retried; any HTTP response is thrown
+ * immediately (retrying a 409 busy / 4xx / 5xx cannot help and may duplicate).
+ */
+export function httpPostRetry<Data, Params = undefined>(
+  path: string | ((params: Params) => string),
+  mapBody?: (params: Params) => unknown,
+  options: { maxAttempts?: number; retryDelayMs?: number; timeout?: number } = {}
+): ProviderLike<Data, Params> {
+  const { maxAttempts = 3, retryDelayMs = 2000, timeout } = options;
+  return {
+    provider: () => {},
+    invoke: (async (params?: Params) => {
+      const resolvedPath = typeof path === 'function' ? path(params!) : path;
+      const body = mapBody ? mapBody(params!) : params;
+      let lastError: unknown;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) {
+          // Backoff: 2s then 4s — lets the Safari connection pool free up as
+          // WS reconnect storms damp out.
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
+        }
+        try {
+          return await httpRequest<Data>('POST', resolvedPath, body, timeout !== undefined ? { timeout } : undefined);
+        } catch (error) {
+          lastError = error;
+          if (error instanceof BackendHttpError) {
+            throw error; // server answered — retrying cannot help
+          }
+          if (error instanceof Error && RETRYABLE_NETWORK_ERROR_PATTERN.test(error.message)) {
+            console.warn(
+              `[httpBridge] POST ${resolvedPath} attempt ${attempt + 1}/${maxAttempts} failed: ${error.message} — retrying`
+            );
+            continue;
+          }
+          throw error;
+        }
+      }
+      throw lastError;
+    }) as ProviderLike<Data, Params>['invoke'],
+  };
+}
+
 export function httpPut<Data, Params = undefined>(
   path: string | ((params: Params) => string),
   mapBody?: (params: Params) => unknown,
@@ -436,6 +495,9 @@ let ws: WebSocket | null = null;
 let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let wsReconnectAttempt = 0;
 let wsHasOpened = false;
+// Timestamp of the last successful socket open. The reconnect backoff resets
+// only when the previous connection was stable — see the close handler.
+let wsOpenedAt = 0;
 
 function dispatchWsEvent(eventName: string, payload: unknown): void {
   const handlers = wsListeners.get(eventName);
@@ -489,7 +551,7 @@ function ensureWs(): void {
     console.debug('[ensureWs] CONNECTED');
     const isReconnect = wsHasOpened;
     wsHasOpened = true;
-    wsReconnectAttempt = 0;
+    wsOpenedAt = Date.now();
     if (isReconnect) {
       dispatchWsEvent(REALTIME_RECONNECTED_EVENT, { timestamp: Date.now() });
     }
@@ -506,6 +568,15 @@ function ensureWs(): void {
       void handleWsAuthClose();
       return;
     }
+    // Reset the backoff ONLY when the previous connection was stable for a
+    // while — a socket that opens and dies within seconds must keep the
+    // growing delay, otherwise the reconnect storm self-sustains at 1s cadence
+    // and keeps Safari's connection pool full (fetch() calls then queue
+    // client-side and hit their timeout).
+    if (wsOpenedAt !== 0 && Date.now() - wsOpenedAt >= 30000) {
+      wsReconnectAttempt = 0;
+    }
+    wsOpenedAt = 0;
     scheduleWsReconnect();
   });
 
@@ -530,6 +601,35 @@ function ensureWs(): void {
       }
     } catch {
       // ignore non-JSON
+    }
+  });
+}
+
+/**
+ * iOS Safari multi-tab mitigation: a hidden background tab keeps its WS alive
+ * while its JS is frozen, so the socket only burns a Safari per-host HTTP/1.1
+ * connection-pool slot (~6 total) for nothing. HOWEVER — on a 5G link the
+ * user switches apps / pulls the notification shade / briefly locks the phone
+ * constantly, firing visibilitychange hidden→visible repeatedly. Closing the
+ * socket on every hide produced a high-frequency reconnect loop (connections
+ * living 50ms-20s, backoff never reached its 30s reset threshold, pool churn
+ * worse than the original disease). So: on hide we only CANCEL the pending
+ * reconnect timer (a frozen background tab must not fire its backoff when
+ * Safari unfreezes it); the socket itself stays open and keeps working across
+ * short app switches. On show we schedule through the normal backoff path —
+ * if the socket died while hidden, the reconnect uses the exponential delay;
+ * if it is still OPEN, scheduleWsReconnect() is a no-op (timer guard).
+ */
+function installVisibilityWsRelease(): void {
+  if (typeof document === 'undefined') return;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
+    } else {
+      scheduleWsReconnect();
     }
   });
 }
@@ -633,3 +733,7 @@ export function stubEmitter<Params = undefined>(_name: string): EmitterLike<Para
     emit: (() => {}) as EmitterLike<Params>['emit'],
   };
 }
+
+// Module-level install: release the WS slot while the tab is hidden
+// (multi-tab Safari pool mitigation — see installVisibilityWsRelease above).
+installVisibilityWsRelease();
