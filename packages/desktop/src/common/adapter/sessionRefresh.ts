@@ -84,7 +84,13 @@ async function performRefresh(): Promise<boolean> {
     // resolveCoreCsrfToken() returns '' and no header is sent; the aionpro superset
     // resolves a real token here and its backend enforces the check. The matching
     // cookie, when one exists, rides `credentials: 'include'`.
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {
+      // axum Json extractor requires Content-Type even when the handler
+      // prefers the refresh cookie (body is ignored on the cookie path, but
+      // the extractor still runs → without this the request is rejected 415
+      // UNSUPPORTED_MEDIA_TYPE and the session can never be refreshed).
+      'Content-Type': 'application/json',
+    };
     const csrfToken = resolveCoreCsrfToken();
     if (csrfToken) {
       headers['x-csrf-token'] = csrfToken;
@@ -96,6 +102,7 @@ async function performRefresh(): Promise<boolean> {
       // the cookie and only falls back to a body token for legacy native clients.
       credentials: 'include',
       headers,
+      body: '{}',
     });
     return response.ok;
   } catch {

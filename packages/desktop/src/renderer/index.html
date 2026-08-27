@@ -68,8 +68,21 @@
         // "logout -> re-login" hang.
         function clearAuthStorage() {
           try {
-            if (window.localStorage) window.localStorage.clear();
-            if (window.sessionStorage) window.sessionStorage.clear();
+            // iOS Safari's localStorage.clear() can silently fail (known
+            // WebKit bug) — explicitly remove the login page's remembered
+            // credential keys FIRST so a failed clear() can never leave the
+            // password behind (the login page auto-submits remembered
+            // credentials → "logout → auto re-login" loop on 5G).
+            var rememberedKeys = ['rememberMe', 'rememberedUsername', 'rememberedPassword'];
+            if (window.localStorage) {
+              for (var rk = 0; rk < rememberedKeys.length; rk++) {
+                try { window.localStorage.removeItem(rememberedKeys[rk]); } catch (e) {}
+              }
+              try { window.localStorage.clear(); } catch (e) {}
+            }
+            if (window.sessionStorage) {
+              try { window.sessionStorage.clear(); } catch (e) {}
+            }
             var cookies = document.cookie.split(';');
             for (var i = 0; i < cookies.length; i++) {
               var cookie = cookies[i].split('=')[0];

@@ -555,10 +555,33 @@ function ensureWs(): void {
     if (isReconnect) {
       dispatchWsEvent(REALTIME_RECONNECTED_EVENT, { timestamp: Date.now() });
     }
+    
+    // 5G Keepalive Mitigation: 5G operators' NAT timeouts are aggressive (30-60s).
+    // Send a lightweight ping every 15s to keep the TCP connection active and
+    // prevent silent drops during idle periods (waiting for messages).
+    // This is an application-layer heartbeat — the backend ignores unknown frames.
+    const heartbeatInterval = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+          console.debug('[WS:heartbeat] ping sent');
+        } catch (e) {
+          console.warn('[WS:heartbeat] send failed:', e);
+        }
+      }
+    }, 15000); // 15 seconds
+    
+    // Store interval ID on ws object for cleanup on close (using a symbol to avoid conflicts)
+    (current as any).__heartbeatInterval = heartbeatInterval;
   });
 
   current.addEventListener('close', (e) => {
     console.debug('[ensureWs] CLOSED code=' + e.code + ' reason=' + e.reason);
+    // Cleanup heartbeat timer
+    if ((current as any).__heartbeatInterval) {
+      clearInterval((current as any).__heartbeatInterval);
+      (current as any).__heartbeatInterval = null;
+    }
     if (ws === current) ws = null;
     if (e.code === WS_CLOSE_POLICY_VIOLATION) {
       // Auth policy violation (expired/missing session). Blindly reconnecting with

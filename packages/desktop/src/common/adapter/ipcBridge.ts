@@ -371,11 +371,10 @@ export const conversation = {
   // network failures (Safari connection pool saturation by WS reconnect storms
   // on mobile links makes the fetch queue client-side). Only client-side
   // failures are retried — HTTP responses (409 busy etc.) are thrown
-  // immediately. 12s per-attempt timeout: MUST stay above the typical pool
-  // queue window (measured 1-8s on 5G) — an 8s timeout aborts right at the
-  // queue→send boundary, racing the 202 response (server processed the POST,
-  // frontend shows timeout, message actually sent). 12s + 1.5s backoff:
-  // (12+1.5+12+3+12 = 40.5s worst case, ~13.5s typical for a single retry).
+  // immediately. 10s per-attempt timeout + 1s backoff: measured on-device
+  // (2026-08-27, v2.1.61) sends land in 0s/10s+/20s+ buckets — a 10s attempt
+  // with 1s backoff turns the 20s+ bucket into ~11s. Must stay above the
+  // typical pool queue window (1-8s) to avoid racing the 202 response.
   sendMessage: httpPostRetry<ISendMessageResult, ISendMessageParams>(
     (p) => `/api/conversations/${p.conversation_id}/messages`,
     (p) => ({
@@ -388,7 +387,7 @@ export const conversation = {
       loading_id: p.loading_id,
       inject_skills: p.inject_skills,
     }),
-    { timeout: 12000, retryDelayMs: 1500 }
+    { timeout: 10000, retryDelayMs: 1000 }
   ),
   getSlashCommands: httpGet<AcpSlashCommandApiItem[], { conversation_id: string }>(
     (p) => `/api/conversations/${p.conversation_id}/slash-commands`
